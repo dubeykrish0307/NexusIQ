@@ -1,0 +1,34 @@
+# Virtual environment — never commit this
+venv/
+.venv/
+
+# Environment variables — contains API keys, never commit
+.env
+
+# Python cache files — auto-generated, not real code
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Database files
+*.db
+*.sqlite3
+
+# ChromaDB data — too large, regenerated on setup
+data/chroma/
+
+# Uploaded documents — user data, not code
+data/uploads/
+
+# macOS system files
+.DS_Store
+
+# VS Code settings
+.vscode/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
