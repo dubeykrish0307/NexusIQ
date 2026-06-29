@@ -32,3 +32,6 @@ data/uploads/
 dist/
 build/
 *.egg-info/
+
+Testing
+Testing/
