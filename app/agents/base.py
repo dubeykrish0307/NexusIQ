@@ -13,6 +13,7 @@ class AgentResponse:
     Every agent, regardless of its specialty, returns this same shape —
     so the Orchestrator can handle all of them identically.
     """
+
     agent_name: str
     output: str
     structured_data: Optional[dict]
@@ -34,7 +35,7 @@ class BaseAgent:
         system_prompt: str,
         tools: list[dict] = None,
         tool_functions: dict[str, Callable] = None,
-        model: str = None
+        model: str = None,
     ):
         self.name = name
         self.system_prompt = system_prompt
@@ -42,6 +43,7 @@ class BaseAgent:
         self.tool_functions = tool_functions or {}
         self.model = model or settings.CHAT_MODEL
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
     def run(self, user_message: str, max_tool_iterations: int = 3) -> AgentResponse:
         """
         Run the agent on a single task. Handles the full tool-calling loop:
@@ -49,7 +51,7 @@ class BaseAgent:
         """
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_message},
         ]
 
         tool_calls_made = []
@@ -70,7 +72,7 @@ class BaseAgent:
                     output=message.content,
                     structured_data=self._try_parse_json(message.content),
                     tool_calls_made=tool_calls_made,
-                    success=True
+                    success=True,
                 )
 
             messages.append(message)
@@ -89,11 +91,13 @@ class BaseAgent:
                     except Exception as e:
                         result = f"Error running tool: {str(e)}"
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": str(result)
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": str(result),
+                    }
+                )
 
         return AgentResponse(
             agent_name=self.name,
@@ -101,18 +105,42 @@ class BaseAgent:
             structured_data=None,
             tool_calls_made=tool_calls_made,
             success=False,
-            error="max_iterations_exceeded"
+            error="max_iterations_exceeded",
         )
 
-    def _try_parse_json(self, text: str) -> Optional[dict]:
+    def _try_parse_json(self, text: str) -> dict | None:
         """
-        Many agents are instructed to respond in JSON.
-        Try to parse it; if it's not valid JSON, return None and
-        let the caller fall back to using the raw text.
+                Robustly parse JSON from agent output.
+
+                Models sometimes wrap JSON in markdown code blocks like:
+        ```json
+                    { ... }
+        ```
+                We strip those before parsing. We also handle the case where
+                the model adds a brief explanation before or after the JSON block.
         """
         if not text:
             return None
+
+        cleaned = text.strip()
+
+        if "```json" in cleaned:
+            start = cleaned.find("```json") + 7
+            end = cleaned.find("```", start)
+            if end != -1:
+                cleaned = cleaned[start:end].strip()
+        elif "```" in cleaned:
+            start = cleaned.find("```") + 3
+            end = cleaned.find("```", start)
+            if end != -1:
+                cleaned = cleaned[start:end].strip()
+
+        brace_start = cleaned.find("{")
+        brace_end = cleaned.rfind("}")
+        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+            cleaned = cleaned[brace_start : brace_end + 1]
+
         try:
-            return json.loads(text)
+            return json.loads(cleaned)
         except (json.JSONDecodeError, TypeError):
             return None
