@@ -1,11 +1,14 @@
 import os
 import shutil
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
 from app.ingestion import ingest_document
 from app.vectorstore import add_chunks_to_store, get_store
 from app.schemas.document import DocumentUploadResponse, DocumentListResponse
+from app.core.database import get_db
+from app.core.db_operations import register_document
 
 load_dotenv()
 
@@ -17,11 +20,11 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 
 
 @router.post("/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
-    """
-    Upload and ingest a document into the NexusIQ vector store.
-    Accepts PDF, DOCX, TXT, and MD files up to 50MB.
-    """
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload and ingest a document into the NexusIQ vector store."""
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -59,6 +62,18 @@ async def upload_document(file: UploadFile = File(...)):
             status_code=500,
             detail=f"Ingestion failed: {str(e)}"
         )
+
+    register_document(
+        db=db,
+        file_name=parsed.file_name,
+        file_type=parsed.file_type,
+        document_category=parsed.document_category,
+        detected_title=parsed.detected_title or "",
+        detected_date=parsed.detected_date or "",
+        chunks_created=len(chunks),
+        char_count=parsed.char_count,
+        word_count=parsed.word_count
+    )
 
     return DocumentUploadResponse(
         message="Document uploaded and ingested successfully.",
