@@ -1,5 +1,6 @@
-from app.agents.base import BaseAgent, AgentResponse
 import json
+
+from app.agents.base import AgentResponse, BaseAgent
 
 
 SYNTHESIZER_SYSTEM_PROMPT = """You are the Synthesizer Agent for NexusIQ, a 
@@ -79,29 +80,18 @@ Return a JSON object with the full report as structured sections.
 
 
 class SynthesizerAgent(BaseAgent):
-    """
-    Final agent in the pipeline. No tools — pure synthesis.
-    Takes all three agent outputs and writes the finished report.
-    """
+    """Last step, no tools: turns the other three agents' output into the final report."""
 
     def __init__(self):
-        super().__init__(
-            name="Synthesizer",
-            system_prompt=SYNTHESIZER_SYSTEM_PROMPT,
-            tools=[],
-            tool_functions={}
-        )
+        super().__init__(name="Synthesizer", system_prompt=SYNTHESIZER_SYSTEM_PROMPT)
 
     def synthesize(
         self,
         extraction_data: dict,
         analysis_data: dict,
         validation_data: dict,
-        document_name: str = None
+        document_name: str = None,
     ) -> AgentResponse:
-        """
-        Produce the final intelligence report from all agent outputs.
-        """
         task = f"""You have the complete outputs from the Extractor, Analyst, 
 and Validator agents. Write the final NexusIQ intelligence report.
 

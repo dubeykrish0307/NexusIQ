@@ -1,6 +1,15 @@
 from datetime import datetime
+
 from sqlalchemy.orm import Session
-from app.core.database import QuestionLog, AnalysisRun, DocumentRegistry
+
+from app.core.database import AnalysisRun, DocumentRegistry, QuestionLog
+
+
+def _save(db: Session, row):
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def log_question(
@@ -10,31 +19,20 @@ def log_question(
     document_filter: str = None,
     chunks_retrieved: int = 0,
     had_sufficient_context: bool = True,
-    model_used: str = None
+    model_used: str = None,
 ) -> QuestionLog:
-    """Save a Q&A interaction to the database."""
-    log = QuestionLog(
+    return _save(db, QuestionLog(
         question=question,
         answer=answer,
         document_filter=document_filter,
         chunks_retrieved=chunks_retrieved,
         had_sufficient_context=1 if had_sufficient_context else 0,
-        model_used=model_used
-    )
-    db.add(log)
-    db.commit()
-    db.refresh(log)
-    return log
+        model_used=model_used,
+    ))
 
 
-def log_analysis_run(
-    db: Session,
-    document_name: str,
-    report: dict,
-    pipeline_stats: dict
-) -> AnalysisRun:
-    """Save a complete analysis run to the database."""
-    run = AnalysisRun(
+def log_analysis_run(db: Session, document_name: str, report: dict, pipeline_stats: dict) -> AnalysisRun:
+    return _save(db, AnalysisRun(
         document_name=document_name,
         overall_assessment=report.get("overall_assessment"),
         executive_summary=report.get("executive_summary"),
@@ -46,12 +44,8 @@ def log_analysis_run(
         risk_landscape=report.get("risk_landscape"),
         pipeline_stats=pipeline_stats,
         agents_run=pipeline_stats.get("agents_run", 4),
-        total_tool_calls=pipeline_stats.get("total_tool_calls", 0)
-    )
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-    return run
+        total_tool_calls=pipeline_stats.get("total_tool_calls", 0),
+    ))
 
 
 def register_document(
@@ -63,107 +57,59 @@ def register_document(
     detected_date: str,
     chunks_created: int,
     char_count: int,
-    word_count: int
+    word_count: int,
 ) -> DocumentRegistry:
-    """
-    Register an uploaded document.
-    Uses upsert pattern — update if exists, insert if new.
-    """
-    existing = db.query(DocumentRegistry).filter(
-        DocumentRegistry.file_name == file_name
-    ).first()
+    """Insert the document, or refresh its details if the same file was uploaded before."""
+    doc = db.query(DocumentRegistry).filter(DocumentRegistry.file_name == file_name).first()
 
-    if existing:
-        existing.document_category = document_category
-        existing.detected_title = detected_title
-        existing.detected_date = detected_date
-        existing.chunks_created = chunks_created
-        existing.char_count = char_count
-        existing.word_count = word_count
-        existing.uploaded_at = datetime.utcnow()
-        db.commit()
-        db.refresh(existing)
-        return existing
+    if doc is None:
+        doc = DocumentRegistry(file_name=file_name, file_type=file_type)
+        db.add(doc)
+    else:
+        doc.uploaded_at = datetime.utcnow()
 
-    doc = DocumentRegistry(
-        file_name=file_name,
-        file_type=file_type,
-        document_category=document_category,
-        detected_title=detected_title,
-        detected_date=detected_date,
-        chunks_created=chunks_created,
-        char_count=char_count,
-        word_count=word_count
-    )
-    db.add(doc)
+    doc.document_category = document_category
+    doc.detected_title = detected_title
+    doc.detected_date = detected_date
+    doc.chunks_created = chunks_created
+    doc.char_count = char_count
+    doc.word_count = word_count
+
     db.commit()
     db.refresh(doc)
     return doc
 
 
-def get_analysis_history(
-    db: Session,
-    document_name: str = None,
-    limit: int = 20
-) -> list[AnalysisRun]:
-    """
-    Retrieve past analysis runs.
-    If document_name is provided, filter to that document only.
-    """
-    query = db.query(AnalysisRun).order_by(
-        AnalysisRun.created_at.desc()
-    )
+def get_analysis_history(db: Session, document_name: str = None, limit: int = 20) -> list[AnalysisRun]:
+    query = db.query(AnalysisRun).order_by(AnalysisRun.created_at.desc())
     if document_name:
-        query = query.filter(
-            AnalysisRun.document_name == document_name
-        )
+        query = query.filter(AnalysisRun.document_name == document_name)
     return query.limit(limit).all()
 
 
-def get_question_history(
-    db: Session,
-    limit: int = 50
-) -> list[QuestionLog]:
-    """Retrieve recent questions, most recent first."""
-    return db.query(QuestionLog).order_by(
-        QuestionLog.created_at.desc()
-    ).limit(limit).all()
+def get_question_history(db: Session, limit: int = 50) -> list[QuestionLog]:
+    return db.query(QuestionLog).order_by(QuestionLog.created_at.desc()).limit(limit).all()
 
 
 def get_usage_stats(db: Session) -> dict:
-    """
-    Aggregate usage statistics across the entire database.
-    Used for the dashboard in the Streamlit UI.
-    """
     total_questions = db.query(QuestionLog).count()
-    total_analyses = db.query(AnalysisRun).count()
-    total_documents = db.query(DocumentRegistry).count()
+    answered = db.query(QuestionLog).filter(QuestionLog.had_sufficient_context == 1).count()
+    success_rate = round(answered / total_questions * 100, 1) if total_questions > 0 else 0
 
-    sufficient_context = db.query(QuestionLog).filter(
-        QuestionLog.had_sufficient_context == 1
-    ).count()
-
-    success_rate = (
-        round(sufficient_context / total_questions * 100, 1)
-        if total_questions > 0 else 0
-    )
-
-    recent_analyses = db.query(AnalysisRun).order_by(
-        AnalysisRun.created_at.desc()
-    ).limit(5).all()
+    recent = db.query(AnalysisRun).order_by(AnalysisRun.created_at.desc()).limit(5).all()
 
     return {
         "total_questions": total_questions,
-        "total_analyses": total_analyses,
-        "total_documents": total_documents,
+        "total_analyses": db.query(AnalysisRun).count(),
+        "total_documents": db.query(DocumentRegistry).count(),
         "context_success_rate": success_rate,
         "recent_analyses": [
             {
                 "document": r.document_name,
                 "assessment": r.overall_assessment,
                 "confidence": r.report_confidence,
-                "timestamp": r.created_at.isoformat()
+                "timestamp": r.created_at.isoformat(),
             }
-            for r in recent_analyses
-        ]
+            for r in recent
+        ],
     }

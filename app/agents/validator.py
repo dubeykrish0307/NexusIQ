@@ -1,6 +1,7 @@
-from app.agents.base import BaseAgent, AgentResponse
-from app.agents.tools import SEARCH_TOOL_SCHEMA, search_document_tool
 import json
+
+from app.agents.base import AgentResponse, BaseAgent
+from app.agents.tools import SEARCH_TOOL_SCHEMA, search_document_tool
 
 
 VALIDATOR_SYSTEM_PROMPT = """You are the Validator Agent for NexusIQ, a financial
@@ -53,40 +54,25 @@ You MUST respond with a single valid JSON object only.
 
 
 class ValidatorAgent(BaseAgent):
-    """
-    Skeptic agent that cross-checks Extractor and Analyst outputs
-    against the actual document content.
-    """
+    """The skeptic: re-checks the Extractor's and Analyst's claims against the document."""
 
     def __init__(self):
         super().__init__(
             name="Validator",
             system_prompt=VALIDATOR_SYSTEM_PROMPT,
             tools=[SEARCH_TOOL_SCHEMA],
-            tool_functions={"search_documents": search_document_tool}
+            tool_functions={"search_documents": search_document_tool},
         )
 
-    def validate(
-        self,
-        extraction_data: dict,
-        analysis_data: dict,
-        document_name: str = None
-    ) -> AgentResponse:
-        """
-        Validate the outputs of both the Extractor and Analyst agents.
-        Takes both their structured JSON outputs as input.
-        """
+    def validate(self, extraction_data: dict, analysis_data: dict, document_name: str = None) -> AgentResponse:
         extraction_json = json.dumps(extraction_data, indent=2)
+        # only the conclusions go to the validator, not the whole analysis
         analysis_summary = {
             "overall_rating": analysis_data.get("overall_rating"),
-            "financial_health_score": analysis_data.get(
-                "financial_health", {}
-            ).get("score"),
+            "financial_health_score": analysis_data.get("financial_health", {}).get("score"),
             "top_3_insights": analysis_data.get("top_3_insights", []),
-            "guidance_credible": analysis_data.get(
-                "guidance_credibility", {}
-            ).get("credible"),
-            "hidden_risks": analysis_data.get("hidden_risks", [])
+            "guidance_credible": analysis_data.get("guidance_credibility", {}).get("credible"),
+            "hidden_risks": analysis_data.get("hidden_risks", []),
         }
 
         task = f"""You have been given the outputs of the Extractor and Analyst 

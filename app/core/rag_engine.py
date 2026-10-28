@@ -1,22 +1,17 @@
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
 from openai import OpenAI
-from dotenv import load_dotenv
 
 from app.core.config import settings
 from app.core.prompts import RAG_SYSTEM_PROMPT, build_rag_user_prompt
 from app.vectorstore import search_documents
 from app.vectorstore.store import SearchResult
 
-load_dotenv()
+NO_CONTEXT_PHRASE = "do not contain enough information"
 
 
 @dataclass
 class RAGResponse:
-    """
-    The complete output of a RAG query.
-    Contains the answer plus full traceability back to source chunks.
-    """
     question: str
     answer: str
     sources: list[SearchResult]
@@ -26,35 +21,45 @@ class RAGResponse:
 
 
 class RAGEngine:
-    """
-    Connects the vector store (retrieval) to the LLM (generation).
-    This is the core question-answering capability of NexusIQ.
-    """
+    """Retrieve the most relevant chunks, then let the model answer from them only."""
 
     def __init__(self):
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+    def _retrieve(self, question, n_results, document_filter):
+        return search_documents(
+            query=question,
+            n_results=n_results or settings.DEFAULT_RETRIEVAL_COUNT,
+            document_filter=document_filter,
+        )
+
+    def _complete(self, question, results, model, stream=False):
+        context = [
+            {"text": r.text, "document_name": r.document_name, "page_number": r.page_number}
+            for r in results
+        ]
+        return self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": RAG_SYSTEM_PROMPT},
+                {"role": "user", "content": build_rag_user_prompt(question, context)},
+            ],
+            temperature=settings.DEFAULT_TEMPERATURE,
+            max_tokens=settings.DEFAULT_MAX_TOKENS,
+            stream=stream,
+        )
 
     def answer_question(
         self,
         question: str,
         n_results: int = None,
         document_filter: str = None,
-        model: str = None
+        model: str = None,
     ) -> RAGResponse:
-        """
-        The full RAG pipeline: retrieve relevant chunks, build a prompt,
-        call the LLM, return a structured answer with sources.
-        """
-        n_results = n_results or settings.DEFAULT_RETRIEVAL_COUNT
         model = model or settings.CHAT_MODEL
+        results = self._retrieve(question, n_results, document_filter)
 
-        search_results = search_documents(
-            query=question,
-            n_results=n_results,
-            document_filter=document_filter
-        )
-
-        if not search_results:
+        if not results:
             return RAGResponse(
                 question=question,
                 answer=(
@@ -64,96 +69,37 @@ class RAGEngine:
                 sources=[],
                 model_used=model,
                 chunks_retrieved=0,
-                had_sufficient_context=False
+                had_sufficient_context=False,
             )
 
-        context_chunks = [
-            {
-                "text": result.text,
-                "document_name": result.document_name,
-                "page_number": result.page_number
-            }
-            for result in search_results
-        ]
-
-        user_prompt = build_rag_user_prompt(question, context_chunks)
-
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": RAG_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=settings.DEFAULT_TEMPERATURE,
-            max_tokens=settings.DEFAULT_MAX_TOKENS
-        )
-
-        answer = response.choices[0].message.content
-
-        had_sufficient_context = (
-            "do not contain enough information" not in answer.lower()
-        )
+        answer = self._complete(question, results, model).choices[0].message.content
 
         return RAGResponse(
             question=question,
             answer=answer,
-            sources=search_results,
+            sources=results,
             model_used=model,
-            chunks_retrieved=len(search_results),
-            had_sufficient_context=had_sufficient_context
+            chunks_retrieved=len(results),
+            # the system prompt tells the model to use this exact phrase when it can't answer
+            had_sufficient_context=NO_CONTEXT_PHRASE not in answer.lower(),
         )
-    
+
     def answer_question_streaming(
         self,
         question: str,
         n_results: int = None,
         document_filter: str = None,
-        model: str = None
+        model: str = None,
     ):
-        """
-        Same as answer_question, but yields tokens as they're generated
-        instead of waiting for the full response. Used for the live
-        'typing' effect in the Streamlit UI.
-        
-        This is a generator function — it yields text chunks one at a time
-        rather than returning a single value.
-        """
-        n_results = n_results or settings.DEFAULT_RETRIEVAL_COUNT
+        """Same as answer_question, but yields the answer piece by piece as it's generated."""
         model = model or settings.CHAT_MODEL
+        results = self._retrieve(question, n_results, document_filter)
 
-        search_results = search_documents(
-            query=question,
-            n_results=n_results,
-            document_filter=document_filter
-        )
-
-        if not search_results:
+        if not results:
             yield "No documents have been uploaded yet. Please upload a document first."
             return
 
-        context_chunks = [
-            {
-                "text": result.text,
-                "document_name": result.document_name,
-                "page_number": result.page_number
-            }
-            for result in search_results
-        ]
-
-        user_prompt = build_rag_user_prompt(question, context_chunks)
-
-        stream = self.client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": RAG_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=settings.DEFAULT_TEMPERATURE,
-            max_tokens=settings.DEFAULT_MAX_TOKENS,
-            stream=True
-        )
-
-        for chunk in stream:
+        for chunk in self._complete(question, results, model, stream=True):
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta

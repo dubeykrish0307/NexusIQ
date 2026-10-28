@@ -1,35 +1,23 @@
-from app.vectorstore.store import VectorStore, SearchResult
-from app.vectorstore.embeddings import EmbeddingGenerator
 from app.ingestion.chunker import DocumentChunk
+from app.vectorstore.embeddings import EmbeddingGenerator
+from app.vectorstore.store import SearchResult, VectorStore
 
+__all__ = ["EmbeddingGenerator", "SearchResult", "VectorStore", "get_store", "add_chunks_to_store", "search_documents"]
 
-_store_instance = None
+_store = None
 
 
 def get_store() -> VectorStore:
-    """
-    Return the singleton VectorStore instance.
-    We use a singleton so the ChromaDB connection is opened once
-    and reused across the entire application — not reopened on
-    every function call.
-    """
-    global _store_instance
-    if _store_instance is None:
-        _store_instance = VectorStore()
-    return _store_instance
+    # one Chroma client for the whole app instead of reopening it on every call
+    global _store
+    if _store is None:
+        _store = VectorStore()
+    return _store
 
 
 def add_chunks_to_store(chunks: list[DocumentChunk]) -> int:
-    """Add document chunks to the vector store."""
-    store = get_store()
-    return store.add_chunks(chunks)
+    return get_store().add_chunks(chunks)
 
 
-def search_documents(
-    query: str,
-    n_results: int = 5,
-    document_filter: str = None
-) -> list[SearchResult]:
-    """Semantic search across all stored documents."""
-    store = get_store()
-    return store.search(query, n_results, document_filter)
+def search_documents(query: str, n_results: int = 5, document_filter: str = None) -> list[SearchResult]:
+    return get_store().search(query, n_results, document_filter)

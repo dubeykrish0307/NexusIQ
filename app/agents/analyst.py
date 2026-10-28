@@ -1,4 +1,6 @@
-from app.agents.base import BaseAgent, AgentResponse
+import json
+
+from app.agents.base import AgentResponse, BaseAgent
 from app.agents.tools import SEARCH_TOOL_SCHEMA, search_document_tool
 
 
@@ -82,31 +84,15 @@ You MUST respond with a single valid JSON object. No prose before or after it.
 
 
 class AnalystAgent(BaseAgent):
-    """
-    Specialized agent for financial and operational analysis.
-    Takes Extractor output as primary input and enriches it with
-    additional document searches for supporting context.
-    """
-
     def __init__(self):
         super().__init__(
             name="Analyst",
             system_prompt=ANALYST_SYSTEM_PROMPT,
             tools=[SEARCH_TOOL_SCHEMA],
-            tool_functions={"search_documents": search_document_tool}
+            tool_functions={"search_documents": search_document_tool},
         )
 
-    def analyze(
-        self,
-        extraction_data: dict,
-        document_name: str = None
-    ) -> AgentResponse:
-        """
-        Run deep analysis on the extracted structured data.
-        Takes the Extractor's JSON output as its primary input.
-        """
-        import json
-
+    def analyze(self, extraction_data: dict, document_name: str = None) -> AgentResponse:
         extraction_json = json.dumps(extraction_data, indent=2)
 
         task = f"""You have been given structured extraction data from a financial document.

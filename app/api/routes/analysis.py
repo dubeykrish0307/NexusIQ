@@ -1,19 +1,19 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core import ask, get_rag_engine
 from app.agents.orchestrator import Orchestrator
-from app.schemas.analysis import QuestionRequest, AnalysisRequest
-from app.schemas.report import ReportResponse
+from app.core import ask, get_rag_engine
 from app.core.database import get_db
 from app.core.db_operations import (
-    log_question,
-    log_analysis_run,
     get_analysis_history,
     get_question_history,
-    get_usage_stats
+    get_usage_stats,
+    log_analysis_run,
+    log_question,
 )
+from app.schemas.analysis import AnalysisRequest, QuestionRequest
+from app.schemas.report import ReportResponse
 
 router = APIRouter()
 
@@ -28,15 +28,12 @@ def get_orchestrator() -> Orchestrator:
 
 
 @router.post("/ask")
-async def ask_question(
-    request: QuestionRequest,
-    db: Session = Depends(get_db)
-):
+async def ask_question(request: QuestionRequest, db: Session = Depends(get_db)):
     """Answer a question using RAG. Logs every interaction."""
     response = ask(
         question=request.question,
         n_results=request.n_results,
-        document_filter=request.document_filter
+        document_filter=request.document_filter,
     )
 
     log_question(
@@ -46,7 +43,7 @@ async def ask_question(
         document_filter=request.document_filter,
         chunks_retrieved=response.chunks_retrieved,
         had_sufficient_context=response.had_sufficient_context,
-        model_used=response.model_used
+        model_used=response.model_used,
     )
 
     return {
@@ -57,68 +54,43 @@ async def ask_question(
                 "document": s.document_name,
                 "page": s.page_number,
                 "relevance_score": s.relevance_score,
-                "preview": s.text[:200]
+                "preview": s.text[:200],
             }
             for s in response.sources
         ],
         "model_used": response.model_used,
-        "had_sufficient_context": response.had_sufficient_context
+        "had_sufficient_context": response.had_sufficient_context,
     }
 
 
 @router.post("/ask/stream")
 async def ask_question_streaming(request: QuestionRequest):
     """Stream response tokens as they arrive."""
-    engine = get_rag_engine()
-
-    def generate():
-        for token in engine.answer_question_streaming(
-            question=request.question,
-            n_results=request.n_results,
-            document_filter=request.document_filter
-        ):
-            yield token
-
-    return StreamingResponse(generate(), media_type="text/plain")
+    tokens = get_rag_engine().answer_question_streaming(
+        question=request.question,
+        n_results=request.n_results,
+        document_filter=request.document_filter,
+    )
+    return StreamingResponse(tokens, media_type="text/plain")
 
 
 @router.post("/analyze", response_model=ReportResponse)
-async def analyze_document(
-    request: AnalysisRequest,
-    db: Session = Depends(get_db)
-):
+async def analyze_document(request: AnalysisRequest, db: Session = Depends(get_db)):
     """Run the full four-agent pipeline. Saves the complete report."""
-    orchestrator = get_orchestrator()
-    result = orchestrator.analyze_document(
-        document_name=request.document_name
-    )
+    result = get_orchestrator().analyze_document(document_name=request.document_name)
 
     if not result.success:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis pipeline failed: {result.error}"
-        )
+        raise HTTPException(status_code=500, detail=f"Analysis pipeline failed: {result.error}")
 
     report = result.final_report
     pipeline_stats = {
         "agents_run": len(result.agent_responses),
-        "total_tool_calls": sum(
-            len(r.tool_calls_made) for r in result.agent_responses
-        ),
-        "validation_status": result.validation.get(
-            "validation_status"
-        ),
-        "verified_claims": len(
-            result.validation.get("verified_claims", [])
-        )
+        "total_tool_calls": sum(len(r.tool_calls_made) for r in result.agent_responses),
+        "validation_status": result.validation.get("validation_status"),
+        "verified_claims": len(result.validation.get("verified_claims", [])),
     }
 
-    log_analysis_run(
-        db=db,
-        document_name=result.document_name,
-        report=report,
-        pipeline_stats=pipeline_stats
-    )
+    log_analysis_run(db=db, document_name=result.document_name, report=report, pipeline_stats=pipeline_stats)
 
     return ReportResponse(
         document_name=result.document_name,
@@ -131,20 +103,13 @@ async def analyze_document(
         outlook=report.get("outlook"),
         report_confidence=report.get("report_confidence"),
         pipeline_stats=pipeline_stats,
-        success=True
+        success=True,
     )
 
 
 @router.get("/history")
-async def get_history(
-    document_name: str = None,
-    limit: int = 20,
-    db: Session = Depends(get_db)
-):
-    """
-    Retrieve past analysis runs.
-    Optionally filter by document name.
-    """
+async def get_history(document_name: str = None, limit: int = 20, db: Session = Depends(get_db)):
+    """Past analysis runs, optionally for one document."""
     runs = get_analysis_history(db, document_name, limit)
     return {
         "runs": [
@@ -156,19 +121,16 @@ async def get_history(
                 "agents_run": r.agents_run,
                 "total_tool_calls": r.total_tool_calls,
                 "executive_summary": r.executive_summary,
-                "created_at": r.created_at.isoformat()
+                "created_at": r.created_at.isoformat(),
             }
             for r in runs
         ],
-        "total": len(runs)
+        "total": len(runs),
     }
 
 
 @router.get("/questions")
-async def get_questions(
-    limit: int = 50,
-    db: Session = Depends(get_db)
-):
+async def get_questions(limit: int = 50, db: Session = Depends(get_db)):
     """Retrieve recent question history."""
     questions = get_question_history(db, limit)
     return {
@@ -177,14 +139,12 @@ async def get_questions(
                 "id": q.id,
                 "question": q.question,
                 "answer": q.answer[:300],
-                "had_sufficient_context": bool(
-                    q.had_sufficient_context
-                ),
-                "created_at": q.created_at.isoformat()
+                "had_sufficient_context": bool(q.had_sufficient_context),
+                "created_at": q.created_at.isoformat(),
             }
             for q in questions
         ],
-        "total": len(questions)
+        "total": len(questions),
     }
 
 

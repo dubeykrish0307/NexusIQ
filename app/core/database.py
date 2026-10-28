@@ -1,31 +1,20 @@
 import os
 from datetime import datetime
-from sqlalchemy import (
-    create_engine, Column, Integer, String,
-    DateTime, Text, Float, JSON
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+
 from dotenv import load_dotenv
+from sqlalchemy import JSON, Column, DateTime, Integer, String, Text, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./nexusiq.db")
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
-
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
 class QuestionLog(Base):
-    """
-    Every question asked via /analysis/ask gets logged here.
-    Enables usage analytics and conversation history.
-    """
     __tablename__ = "question_logs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -39,10 +28,6 @@ class QuestionLog(Base):
 
 
 class AnalysisRun(Base):
-    """
-    Every full four-agent analysis run gets stored here.
-    Stores the complete report so it can be retrieved without re-running.
-    """
     __tablename__ = "analysis_runs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -62,10 +47,6 @@ class AnalysisRun(Base):
 
 
 class DocumentRegistry(Base):
-    """
-    Tracks every document that has been uploaded and ingested.
-    Stores metadata detected during ingestion for quick retrieval.
-    """
     __tablename__ = "document_registry"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -81,16 +62,11 @@ class DocumentRegistry(Base):
 
 
 def create_tables():
-    """Create all tables if they don't exist."""
     Base.metadata.create_all(bind=engine)
 
 
 def get_db():
-    """
-    Dependency injector for FastAPI route handlers.
-    Yields a database session and ensures it closes after the request,
-    even if an exception occurs.
-    """
+    """FastAPI dependency: one session per request, always closed afterwards."""
     db = SessionLocal()
     try:
         yield db

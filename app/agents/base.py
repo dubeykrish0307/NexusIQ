@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Callable, Optional
+
 from openai import OpenAI
 
 from app.core.config import settings
@@ -8,12 +9,6 @@ from app.core.config import settings
 
 @dataclass
 class AgentResponse:
-    """
-    Standardized output from any agent.
-    Every agent, regardless of its specialty, returns this same shape —
-    so the Orchestrator can handle all of them identically.
-    """
-
     agent_name: str
     output: str
     structured_data: Optional[dict]
@@ -23,11 +18,7 @@ class AgentResponse:
 
 
 class BaseAgent:
-    """
-    Shared foundation for all NexusIQ agents.
-    Handles the LLM call loop, including tool/function calling,
-    so each specialized agent only needs to define its prompt and tools.
-    """
+    """Runs the chat + tool-calling loop. Each agent only brings its prompt and tools."""
 
     def __init__(
         self,
@@ -45,25 +36,19 @@ class BaseAgent:
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
     def run(self, user_message: str, max_tool_iterations: int = 3) -> AgentResponse:
-        """
-        Run the agent on a single task. Handles the full tool-calling loop:
-        the model can call tools multiple times before giving a final answer.
-        """
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message},
         ]
-
         tool_calls_made = []
 
-        for iteration in range(max_tool_iterations):
+        for _ in range(max_tool_iterations):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                tools=self.tools if self.tools else None,
+                tools=self.tools or None,
                 temperature=settings.DEFAULT_TEMPERATURE,
             )
-
             message = response.choices[0].message
 
             if not message.tool_calls:
@@ -72,32 +57,17 @@ class BaseAgent:
                     output=message.content,
                     structured_data=self._try_parse_json(message.content),
                     tool_calls_made=tool_calls_made,
-                    success=True,
                 )
 
             messages.append(message)
-
             for tool_call in message.tool_calls:
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-
-                tool_calls_made.append(function_name)
-
-                if function_name not in self.tool_functions:
-                    result = f"Error: tool '{function_name}' not implemented."
-                else:
-                    try:
-                        result = self.tool_functions[function_name](**function_args)
-                    except Exception as e:
-                        result = f"Error running tool: {str(e)}"
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": str(result),
-                    }
-                )
+                name = tool_call.function.name
+                tool_calls_made.append(name)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": str(self._call_tool(name, tool_call.function.arguments)),
+                })
 
         return AgentResponse(
             agent_name=self.name,
@@ -108,37 +78,32 @@ class BaseAgent:
             error="max_iterations_exceeded",
         )
 
-    def _try_parse_json(self, text: str) -> dict | None:
-        """
-                Robustly parse JSON from agent output.
+    def _call_tool(self, name: str, arguments: str):
+        args = json.loads(arguments)
+        if name not in self.tool_functions:
+            return f"Error: tool '{name}' not implemented."
+        try:
+            return self.tool_functions[name](**args)
+        except Exception as e:
+            return f"Error running tool: {str(e)}"
 
-                Models sometimes wrap JSON in markdown code blocks like:
-        ```json
-                    { ... }
-        ```
-                We strip those before parsing. We also handle the case where
-                the model adds a brief explanation before or after the JSON block.
-        """
+    def _try_parse_json(self, text: str) -> dict | None:
+        # Models like to wrap JSON in ``` fences or add a sentence around it,
+        # so cut it down to the outermost braces before parsing.
         if not text:
             return None
 
         cleaned = text.strip()
-
-        if "```json" in cleaned:
-            start = cleaned.find("```json") + 7
-            end = cleaned.find("```", start)
-            if end != -1:
-                cleaned = cleaned[start:end].strip()
-        elif "```" in cleaned:
-            start = cleaned.find("```") + 3
+        fence = "```json" if "```json" in cleaned else "```" if "```" in cleaned else None
+        if fence:
+            start = cleaned.find(fence) + len(fence)
             end = cleaned.find("```", start)
             if end != -1:
                 cleaned = cleaned[start:end].strip()
 
-        brace_start = cleaned.find("{")
-        brace_end = cleaned.rfind("}")
-        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
-            cleaned = cleaned[brace_start : brace_end + 1]
+        first, last = cleaned.find("{"), cleaned.rfind("}")
+        if first != -1 and last > first:
+            cleaned = cleaned[first:last + 1]
 
         try:
             return json.loads(cleaned)

@@ -2,24 +2,15 @@ from app.vectorstore import search_documents
 
 
 def search_document_tool(query: str, document_filter: str = None) -> str:
-    """
-    The actual Python function that gets executed when an agent
-    calls the 'search_documents' tool. Wraps our Day 4 vector search
-    and formats the result as plain text the model can read.
-    """
+    """What actually runs when an agent calls search_documents: vector search, formatted as plain text."""
     results = search_documents(query=query, n_results=5, document_filter=document_filter)
-
     if not results:
         return "No relevant content found in the documents."
 
-    formatted = []
-    for i, result in enumerate(results, start=1):
-        formatted.append(
-            f"[Chunk {i} | {result.document_name} | Page {result.page_number}]\n"
-            f"{result.text}"
-        )
-
-    return "\n\n".join(formatted)
+    return "\n\n".join(
+        f"[Chunk {i} | {r.document_name} | Page {r.page_number}]\n{r.text}"
+        for i, r in enumerate(results, start=1)
+    )
 
 
 SEARCH_TOOL_SCHEMA = {
@@ -40,17 +31,17 @@ SEARCH_TOOL_SCHEMA = {
                     "description": (
                         "The search query. Be specific — e.g. "
                         "'revenue figures' or 'risk factors related to competition'."
-                    )
+                    ),
                 },
                 "document_filter": {
                     "type": "string",
                     "description": (
                         "Optional. If set, only search within this specific "
                         "document name. Leave empty to search all documents."
-                    )
-                }
+                    ),
+                },
             },
-            "required": ["query"]
-        }
-    }
+            "required": ["query"],
+        },
+    },
 }

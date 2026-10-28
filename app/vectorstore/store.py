@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from typing import Optional
+
 import chromadb
 from chromadb.config import Settings
 from dotenv import load_dotenv
@@ -13,10 +14,6 @@ load_dotenv()
 
 @dataclass
 class SearchResult:
-    """
-    A single result from a vector search.
-    Wraps a chunk with its relevance score.
-    """
     chunk_id: str
     document_name: str
     document_category: str
@@ -26,197 +23,115 @@ class SearchResult:
     chunk_index: int
     metadata: dict
 
-class VectorStore:
-    """
-    Manages document storage and semantic search using ChromaDB.
-    All document chunks are stored here as vector embeddings.
-    """
 
+def _chunk_metadata(chunk: DocumentChunk) -> dict:
+    # Chroma metadata values have to be plain scalars, so everything goes in as a string
+    return {
+        "document_name": chunk.document_name,
+        "document_category": chunk.document_category,
+        "page_number": str(chunk.page_number or 0),
+        "chunk_index": str(chunk.chunk_index),
+        "total_chunks": str(chunk.total_chunks),
+        "detected_title": str(chunk.metadata.get("detected_title", "")),
+        "detected_date": str(chunk.metadata.get("detected_date", "")),
+        "file_type": str(chunk.metadata.get("file_type", "")),
+    }
+
+
+class VectorStore:
     COLLECTION_NAME = "nexusiq_documents"
 
     def __init__(self):
-        persist_dir = os.getenv(
-            "CHROMA_PERSIST_DIRECTORY", "./data/chroma"
-        )
-
+        persist_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/chroma")
         os.makedirs(persist_dir, exist_ok=True)
 
-        self.client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=Settings(anonymized_telemetry=False)
-        )
-
+        self.client = chromadb.PersistentClient(path=persist_dir, settings=Settings(anonymized_telemetry=False))
         self.collection = self.client.get_or_create_collection(
             name=self.COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"}
+            metadata={"hnsw:space": "cosine"},
         )
-
         self.embedder = EmbeddingGenerator()
 
-        print(f"VectorStore ready. "
-              f"Collection '{self.COLLECTION_NAME}' has "
-              f"{self.collection.count()} stored chunks.")
-        
+        print(f"VectorStore ready. Collection '{self.COLLECTION_NAME}' has {self.collection.count()} stored chunks.")
+
     def add_chunks(self, chunks: list[DocumentChunk]) -> int:
-        """
-        Embed and store a list of document chunks.
-        Skips chunks that are already stored (by chunk_id).
-        Returns the number of new chunks actually added.
-        """
+        """Embed and store chunks that aren't in the collection yet. Returns how many were added."""
         if not chunks:
             return 0
 
-        existing_ids = set()
         try:
-            existing = self.collection.get(
-                ids=[c.chunk_id for c in chunks],
-                include=[]
-            )
+            existing = self.collection.get(ids=[c.chunk_id for c in chunks], include=[])
             existing_ids = set(existing["ids"])
         except Exception:
-            pass
+            existing_ids = set()
 
         new_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
-
         if not new_chunks:
             print("  All chunks already stored. Skipping.")
             return 0
 
         print(f"  Embedding {len(new_chunks)} chunks...")
-        texts = [chunk.text for chunk in new_chunks]
-        embeddings = self.embedder.embed_batch(texts)
-
-        ids = [chunk.chunk_id for chunk in new_chunks]
-        documents = [chunk.text for chunk in new_chunks]
-        metadatas = [
-            {
-                "document_name": chunk.document_name,
-                "document_category": chunk.document_category,
-                "page_number": str(chunk.page_number or 0),
-                "chunk_index": str(chunk.chunk_index),
-                "total_chunks": str(chunk.total_chunks),
-                "detected_title": str(
-                    chunk.metadata.get("detected_title", "")
-                ),
-                "detected_date": str(
-                    chunk.metadata.get("detected_date", "")
-                ),
-                "file_type": str(
-                    chunk.metadata.get("file_type", "")
-                ),
-            }
-            for chunk in new_chunks
-        ]
+        texts = [c.text for c in new_chunks]
 
         self.collection.add(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas
+            ids=[c.chunk_id for c in new_chunks],
+            embeddings=self.embedder.embed_batch(texts),
+            documents=texts,
+            metadatas=[_chunk_metadata(c) for c in new_chunks],
         )
 
         print(f"  Stored {len(new_chunks)} chunks successfully.")
         return len(new_chunks)
-    
-    def search(
-        self,
-        query: str,
-        n_results: int = 5,
-        document_filter: Optional[str] = None
-    ) -> list[SearchResult]:
-        """
-        Semantic search: find the n most relevant chunks for a query.
-        
-        Args:
-            query: Natural language question or search term
-            n_results: How many chunks to return
-            document_filter: If set, only search within this document
-        
-        Returns:
-            List of SearchResult objects, sorted by relevance (best first)
-        """
+
+    def search(self, query: str, n_results: int = 5, document_filter: Optional[str] = None) -> list[SearchResult]:
+        """Return the n_results chunks closest to the query, best match first."""
         if self.collection.count() == 0:
             return []
 
-        query_embedding = self.embedder.embed_text(query)
-
-        where_filter = None
-        if document_filter:
-            where_filter = {"document_name": {"$eq": document_filter}}
-
+        where = {"document_name": {"$eq": document_filter}} if document_filter else None
         results = self.collection.query(
-            query_embeddings=[query_embedding],
+            query_embeddings=[self.embedder.embed_text(query)],
             n_results=min(n_results, self.collection.count()),
             include=["documents", "distances", "metadatas"],
-            where=where_filter
+            where=where,
         )
 
-        search_results = []
-        ids = results["ids"][0]
-        distances = results["distances"][0]
-        documents = results["documents"][0]
-        metadatas = results["metadatas"][0]
-
-        for i in range(len(ids)):
-            relevance_score = 1.0 - distances[i]
-
-            search_results.append(SearchResult(
-                chunk_id=ids[i],
-                document_name=metadatas[i].get("document_name", ""),
-                document_category=metadatas[i].get("document_category", ""),
-                text=documents[i],
-                page_number=int(metadatas[i].get("page_number", 0)) or None,
-                relevance_score=round(relevance_score, 4),
-                chunk_index=int(metadatas[i].get("chunk_index", 0)),
-                metadata=metadatas[i]
+        hits = []
+        for chunk_id, distance, text, meta in zip(
+            results["ids"][0], results["distances"][0], results["documents"][0], results["metadatas"][0]
+        ):
+            hits.append(SearchResult(
+                chunk_id=chunk_id,
+                document_name=meta.get("document_name", ""),
+                document_category=meta.get("document_category", ""),
+                text=text,
+                page_number=int(meta.get("page_number", 0)) or None,
+                relevance_score=round(1.0 - distance, 4),  # cosine distance -> similarity
+                chunk_index=int(meta.get("chunk_index", 0)),
+                metadata=meta,
             ))
 
-        return sorted(search_results, key=lambda r: r.relevance_score, reverse=True)
-    
-    def delete_document(self, document_name: str) -> int:
-        """
-        Remove all chunks belonging to a document from the store.
-        Used when a document is re-uploaded with changes.
-        Returns the number of chunks deleted.
-        """
-        existing = self.collection.get(
-            where={"document_name": {"$eq": document_name}},
-            include=[]
-        )
+        return sorted(hits, key=lambda r: r.relevance_score, reverse=True)
 
+    def delete_document(self, document_name: str) -> int:
+        existing = self.collection.get(where={"document_name": {"$eq": document_name}}, include=[])
         if not existing["ids"]:
             return 0
 
         self.collection.delete(ids=existing["ids"])
-        deleted_count = len(existing["ids"])
-        print(f"  Deleted {deleted_count} chunks for '{document_name}'.")
-        return deleted_count
+        print(f"  Deleted {len(existing['ids'])} chunks for '{document_name}'.")
+        return len(existing["ids"])
 
     def get_document_list(self) -> list[str]:
-        """
-        Return a list of all unique document names in the store.
-        """
         if self.collection.count() == 0:
             return []
-
-        all_items = self.collection.get(include=["metadatas"])
-        names = set()
-        for meta in all_items["metadatas"]:
-            if "document_name" in meta:
-                names.add(meta["document_name"])
-
-        return sorted(list(names))
+        metadatas = self.collection.get(include=["metadatas"])["metadatas"]
+        return sorted({meta["document_name"] for meta in metadatas if "document_name" in meta})
 
     def get_stats(self) -> dict:
-        """
-        Return basic statistics about the collection.
-        Useful for the UI and for debugging.
-        """
-        total_chunks = self.collection.count()
         documents = self.get_document_list()
-
         return {
-            "total_chunks": total_chunks,
+            "total_chunks": self.collection.count(),
             "total_documents": len(documents),
             "documents": documents,
             "collection_name": self.COLLECTION_NAME,

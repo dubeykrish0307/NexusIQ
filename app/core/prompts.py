@@ -23,28 +23,14 @@ RULES YOU MUST FOLLOW:
 
 
 def build_rag_user_prompt(question: str, context_chunks: list[dict]) -> str:
-    """
-    Build the user message that contains retrieved context plus the question.
-    
-    Args:
-        question: The user's natural language question
-        context_chunks: List of dicts with keys: text, document_name, page_number
-    
-    Returns:
-        A formatted string ready to send as the user message
-    """
-    context_blocks = []
+    """context_chunks are dicts with text, document_name and page_number."""
+    blocks = [
+        f"[Source {i} — {chunk['document_name']}, Page {chunk['page_number'] or 'N/A'}]\n{chunk['text']}"
+        for i, chunk in enumerate(context_chunks, start=1)
+    ]
+    context_text = "\n\n".join(blocks)
 
-    for i, chunk in enumerate(context_chunks, start=1):
-        source_label = (
-            f"[Source {i} — {chunk['document_name']}, "
-            f"Page {chunk['page_number'] or 'N/A'}]"
-        )
-        context_blocks.append(f"{source_label}\n{chunk['text']}")
-
-    context_text = "\n\n".join(context_blocks)
-
-    prompt = f"""CONTEXT:
+    return f"""CONTEXT:
 
 {context_text}
 
@@ -52,5 +38,3 @@ QUESTION:
 {question}
 
 Answer the question using only the context above. Cite sources using [Source N] format."""
-
-    return prompt

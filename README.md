@@ -51,6 +51,7 @@ cp .env.example .env            # add your OPENAI_API_KEY
 
 uvicorn app.main:app --reload            # API + docs on http://127.0.0.1:8000/docs
 streamlit run ui/streamlit_app.py        # UI on http://localhost:8501
+pytest                                   # ingestion tests
 ```
 
 ### API
@@ -86,8 +87,7 @@ ui/streamlit_app.py   upload, ask, analyse and dashboard pages
 
 - [ ] Evaluation set: 30 questions with known answers from public annual reports, to measure answer accuracy, citation accuracy and how often it abstains correctly.
 - [ ] Conversation memory, so follow-up questions ("and the year before?") work.
-- [ ] Ingestion tests (`tests/test_ingestion.py` is still empty) and a working Dockerfile.
-- [ ] Clean up the duplicated app setup in `app/main.py`.
+- [ ] A working Dockerfile, and tests for the API routes (ingestion is covered in `tests/test_ingestion.py`).
 
 ---
 

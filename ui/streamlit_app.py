@@ -1,507 +1,770 @@
-import sys
-import os
+import sys, os, json, uuid, requests
+from datetime import datetime, date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import streamlit as st
-import requests
-import json
-import time
-from datetime import datetime
 
 API_BASE = "http://localhost:8000"
 
 st.set_page_config(
-    page_title="NexusIQ",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="NexusIQ", page_icon="⬡",
+    layout="wide", initial_sidebar_state="collapsed"
 )
 
+# ── STATE ──────────────────────────────────────────────────────────────────
+def _init():
+    defaults = {
+        "sidebar_open": True,
+        "sessions": {},      # {id: {name, meta, history, ts}}
+        "active": None,      # active session id
+        "uploading": False,  # new-chat upload screen
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+_init()
+
+# ── STYLES ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.2rem;
-        font-weight: 700;
-        color: #1a1a2e;
-        margin-bottom: 0.2rem;
-    }
-    .sub-header {
-        font-size: 1rem;
-        color: #666;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background: #f8f9fa;
-        border-radius: 12px;
-        padding: 1.2rem;
-        border-left: 4px solid #4361ee;
-        margin-bottom: 1rem;
-    }
-    .agent-step {
-        background: #eef2ff;
-        border-radius: 8px;
-        padding: 0.8rem 1rem;
-        margin: 0.4rem 0;
-        border-left: 3px solid #4361ee;
-        font-size: 0.9rem;
-    }
-    .risk-high { border-left: 4px solid #e63946; }
-    .risk-medium { border-left: 4px solid #f4a261; }
-    .risk-low { border-left: 4px solid #2a9d8f; }
-    .verified { color: #2a9d8f; font-weight: 500; }
-    .unverified { color: #e63946; font-weight: 500; }
-    .assessment-STRONG { color: #2a9d8f; font-weight: 700; }
-    .assessment-STABLE { color: #4361ee; font-weight: 700; }
-    .assessment-CONCERNING { color: #f4a261; font-weight: 700; }
-    .assessment-CRITICAL { color: #e63946; font-weight: 700; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;1,14..32,300&display=swap');
+
+/* ── RESET ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body,
+[data-testid="stAppViewContainer"],
+[data-testid="stApp"] {
+    background: #0d0d0f !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    color: #e8e8e8 !important;
+}
+
+/* ── KILL STREAMLIT CHROME ── */
+#MainMenu, footer, header,
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="manage-app-button"],
+.stDeployButton { display: none !important; }
+
+/* ── MAIN PADDING ── */
+.block-container {
+    padding: 0 !important;
+    max-width: 100% !important;
+}
+
+[data-testid="stMain"] { padding: 0 !important; }
+[data-testid="stVerticalBlock"] { gap: 0 !important; }
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+
+/* ── SIDEBAR COLUMN ── */
+.sidebar-panel {
+    background: #111114;
+    height: 100vh;
+    position: sticky;
+    top: 0;
+    border-right: 0.5px solid rgba(255,255,255,0.07);
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.sidebar-top {
+    padding: 18px 16px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 0.5px solid rgba(255,255,255,0.05);
+}
+
+.wordmark {
+    font-size: 15px;
+    font-weight: 600;
+    color: #e8e8e8;
+    letter-spacing: -0.03em;
+}
+
+.hamburger-btn {
+    width: 30px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 7px;
+    cursor: pointer;
+    color: rgba(255,255,255,0.4);
+    font-size: 14px;
+    transition: background 0.12s, color 0.12s;
+    border: none; background: transparent;
+    flex-shrink: 0;
+}
+.hamburger-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
+
+.new-chat-btn {
+    margin: 10px 12px 6px;
+    padding: 9px 14px;
+    background: rgba(255,255,255,0.05);
+    border: 0.5px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.75);
+    cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    transition: background 0.12s, border-color 0.12s;
+    width: calc(100% - 24px);
+}
+.new-chat-btn:hover {
+    background: rgba(255,255,255,0.09);
+    border-color: rgba(255,255,255,0.18);
+    color: #e8e8e8;
+}
+
+.session-group-label {
+    padding: 14px 16px 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.session-item {
+    margin: 1px 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.55);
+    cursor: pointer;
+    display: flex; align-items: center; gap: 9px;
+    transition: background 0.1s, color 0.1s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.35;
+}
+.session-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.85); }
+.session-item.active { background: rgba(255,255,255,0.08); color: #e8e8e8; }
+.session-icon { opacity: 0.45; flex-shrink: 0; font-size: 12px; }
+.session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.sidebar-sessions {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 16px;
+}
+
+/* ── MAIN PANEL ── */
+.main-panel {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: #0d0d0f;
+    position: relative;
+}
+
+/* ── TOP BAR ── */
+.top-bar {
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 0.5px solid rgba(255,255,255,0.06);
+    background: rgba(13,13,15,0.95);
+    backdrop-filter: blur(12px);
+    position: sticky; top: 0; z-index: 10;
+    min-height: 52px;
+}
+
+.top-bar-doc {
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.5);
+    letter-spacing: -0.01em;
+}
+
+.top-bar-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(109,110,254,0.12);
+    color: rgba(109,110,254,0.9);
+    border: 0.5px solid rgba(109,110,254,0.2);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+}
+
+/* ── BUTTONS (override Streamlit) ── */
+.stButton > button {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    color: rgba(255,255,255,0.45) !important;
+    font-size: 18px !important;
+    line-height: 1 !important;
+    width: 32px !important;
+    height: 32px !important;
+    border-radius: 8px !important;
+    transition: background 0.12s, color 0.12s !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+.stButton > button:hover {
+    background: rgba(255,255,255,0.07) !important;
+    color: rgba(255,255,255,0.85) !important;
+}
+
+/* Primary button override */
+.stButton > button[kind="primary"] {
+    background: rgba(109,110,254,0.85) !important;
+    border: none !important;
+    color: #fff !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    padding: 0.55rem 1.4rem !important;
+    border-radius: 10px !important;
+    width: auto !important;
+    height: auto !important;
+    letter-spacing: -0.01em !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: rgba(109,110,254,1) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ── CHAT MESSAGES ── */
+[data-testid="stChatMessage"] {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+}
+
+[data-testid="stChatMessageContent"] {
+    font-size: 15px !important;
+    line-height: 1.65 !important;
+    color: #e0e0e0 !important;
+    font-weight: 400 !important;
+}
+
+/* User message: right-leaning minimal */
+[data-testid="stChatMessage"][data-testid*="user"] [data-testid="stChatMessageContent"] {
+    background: rgba(255,255,255,0.05) !important;
+    border: 0.5px solid rgba(255,255,255,0.09) !important;
+    border-radius: 16px 16px 4px 16px !important;
+    padding: 11px 16px !important;
+    display: inline-block !important;
+    max-width: 78% !important;
+    float: right !important;
+    clear: both !important;
+    color: rgba(255,255,255,0.85) !important;
+}
+
+/* ── CHAT INPUT ── */
+[data-testid="stChatInput"] {
+    background: rgba(255,255,255,0.05) !important;
+    border: 0.5px solid rgba(255,255,255,0.1) !important;
+    border-radius: 14px !important;
+    backdrop-filter: blur(10px) !important;
+    margin: 0 !important;
+}
+
+[data-testid="stChatInput"] textarea {
+    background: transparent !important;
+    color: #e8e8e8 !important;
+    font-size: 15px !important;
+    font-family: inherit !important;
+    caret-color: #6d6efe !important;
+    border: none !important;
+    padding: 12px 14px !important;
+    line-height: 1.5 !important;
+}
+
+[data-testid="stChatInput"] textarea::placeholder { color: rgba(255,255,255,0.2) !important; }
+[data-testid="stChatInput"] textarea:focus { box-shadow: none !important; outline: none !important; }
+
+[data-testid="stChatInput"] button {
+    background: rgba(109,110,254,0.75) !important;
+    border-radius: 9px !important;
+    color: #fff !important;
+    width: 32px !important;
+    height: 32px !important;
+    font-size: 13px !important;
+}
+
+/* ── CHAT BOTTOM AREA ── */
+[data-testid="stBottom"] {
+    background: linear-gradient(to top,
+        rgba(13,13,15,1) 60%,
+        rgba(13,13,15,0) 100%) !important;
+    padding: 16px 20px 20px !important;
+}
+
+/* ── FILE UPLOADER ── */
+[data-testid="stFileUploader"] {
+    background: rgba(255,255,255,0.02) !important;
+    border: 1.5px dashed rgba(255,255,255,0.1) !important;
+    border-radius: 18px !important;
+    transition: border-color 0.2s, background 0.2s !important;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: rgba(109,110,254,0.4) !important;
+    background: rgba(109,110,254,0.03) !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] {
+    color: rgba(255,255,255,0.3) !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] small {
+    color: rgba(255,255,255,0.2) !important;
+}
+
+/* ── EXPANDER ── */
+[data-testid="stExpander"] {
+    background: rgba(255,255,255,0.02) !important;
+    border: 0.5px solid rgba(255,255,255,0.07) !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+}
+[data-testid="stExpander"] summary {
+    color: rgba(255,255,255,0.35) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    padding: 8px 12px !important;
+}
+[data-testid="stExpander"] summary:hover { color: rgba(255,255,255,0.6) !important; }
+
+/* ── GENERAL TEXT ── */
+p, li, td { color: rgba(255,255,255,0.72) !important; font-size: 14px !important; }
+h1, h2, h3, h4, h5 { color: #f0f0f0 !important; letter-spacing: -0.04em !important; }
+strong { color: rgba(255,255,255,0.88) !important; }
+small, .stCaption p { color: rgba(255,255,255,0.25) !important; font-size: 12px !important; }
+
+/* ── SPINNER ── */
+[data-testid="stSpinner"] > div > div {
+    border-top-color: #6d6efe !important;
+}
+
+/* ── COLUMNS GAP FIX ── */
+[data-testid="stHorizontalBlock"] { gap: 0 !important; align-items: stretch !important; }
+
+/* ── DIVIDER ── */
+hr { border-color: rgba(255,255,255,0.06) !important; margin: 0.8rem 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-def api_get(endpoint: str) -> dict | None:
-    """Make a GET request to the API. Returns None on failure."""
+# ── API ────────────────────────────────────────────────────────────────────
+def api_get(path, timeout=10):
     try:
-        response = requests.get(f"{API_BASE}{endpoint}", timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to NexusIQ API. "
-                 "Make sure the server is running on port 8000.")
+        r = requests.get(f"{API_BASE}{path}", timeout=timeout)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
         return None
 
-
-def api_post(endpoint: str, data: dict = None,
-             files: dict = None) -> dict | None:
-    """Make a POST request to the API."""
+def api_post(path, data=None, files=None, timeout=120):
     try:
         if files:
-            response = requests.post(
-                f"{API_BASE}{endpoint}", files=files, timeout=30
-            )
+            r = requests.post(f"{API_BASE}{path}", files=files, timeout=30)
         else:
-            response = requests.post(
-                f"{API_BASE}{endpoint}",
-                json=data,
-                timeout=120
-            )
-        if response.status_code == 200:
-            return response.json()
-        st.error(f"API error {response.status_code}: "
-                 f"{response.json().get('detail', 'Unknown error')}")
-        return None
-    except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to NexusIQ API.")
+            r = requests.post(f"{API_BASE}{path}", json=data, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        detail = r.json().get("detail", "Unknown error")
+        st.error(f"API {r.status_code}: {detail}")
         return None
     except requests.exceptions.Timeout:
-        st.error("Request timed out. The analysis pipeline "
-                 "can take 60-90 seconds — please try again.")
+        st.error("Request timed out.")
         return None
-    
-def render_sidebar():
-    """Sidebar: navigation, document list, quick stats."""
-    with st.sidebar:
-        st.markdown("## 🧠 NexusIQ")
-        st.markdown("*Multi-agent document intelligence*")
-        st.divider()
+    except Exception as e:
+        st.error(f"Connection error — is the API server running? ({e})")
+        return None
 
-        page = st.radio(
-            "Navigate",
-            ["📤 Upload & Ingest",
-             "💬 Ask Questions",
-             "🔬 Deep Analysis",
-             "📊 Dashboard"],
+def stream_question(question, doc_filter=None, n_results=5):
+    """Generator that yields tokens from the streaming endpoint."""
+    try:
+        with requests.post(
+            f"{API_BASE}/analysis/ask/stream",
+            json={"question": question,
+                  "document_filter": doc_filter,
+                  "n_results": n_results},
+            stream=True, timeout=60
+        ) as r:
+            for chunk in r.iter_content(chunk_size=None):
+                if chunk:
+                    yield chunk.decode("utf-8")
+    except Exception as e:
+        yield f"\n\n_Error: {e}_"
+
+def get_sources(question, doc_filter=None):
+    result = api_post("/analysis/ask", {
+        "question": question,
+        "document_filter": doc_filter,
+        "n_results": 5
+    })
+    return result.get("sources", []) if result else []
+
+
+# ── SESSION HELPERS ────────────────────────────────────────────────────────
+def new_session(doc_name, meta):
+    sid = str(uuid.uuid4())
+    st.session_state.sessions[sid] = {
+        "name": doc_name,
+        "meta": meta,
+        "history": [],
+        "ts": datetime.now().isoformat()
+    }
+    return sid
+
+def get_session():
+    sid = st.session_state.active
+    if sid and sid in st.session_state.sessions:
+        return st.session_state.sessions[sid]
+    return None
+
+def session_display_name(name):
+    stem = os.path.splitext(name)[0].replace("_", " ").replace("-", " ")
+    return stem[:32] + ("…" if len(stem) > 32 else "")
+
+def group_sessions_by_date():
+    today = date.today()
+    groups = {"Today": [], "Yesterday": [], "Earlier": []}
+    for sid, s in st.session_state.sessions.items():
+        d = datetime.fromisoformat(s["ts"]).date()
+        delta = (today - d).days
+        if delta == 0:
+            groups["Today"].append((sid, s))
+        elif delta == 1:
+            groups["Yesterday"].append((sid, s))
+        else:
+            groups["Earlier"].append((sid, s))
+    return {k: v for k, v in groups.items() if v}
+
+
+# ── SIDEBAR ────────────────────────────────────────────────────────────────
+def render_sidebar_content():
+    """Renders the content inside the sidebar column."""
+    st.markdown("""
+<div class="sidebar-panel">
+    <div class="sidebar-top">
+        <span class="wordmark">⬡ NexusIQ</span>
+    </div>
+""", unsafe_allow_html=True)
+
+    # Hamburger close button
+    if st.button("✕", key="close_sidebar"):
+        st.session_state.sidebar_open = False
+        st.rerun()
+
+    # New chat
+    st.markdown("""
+<button class="new-chat-btn" onclick="return false">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="12" y1="5" x2="12" y2="19"/>
+        <line x1="5" y1="12" x2="19" y2="12"/>
+    </svg>
+    New Chat
+</button>
+""", unsafe_allow_html=True)
+
+    if st.button("＋  New Chat", key="new_chat_btn"):
+        st.session_state.uploading = True
+        st.session_state.active = None
+        st.rerun()
+
+    # Session list
+    groups = group_sessions_by_date()
+    if groups:
+        st.markdown('<div class="sidebar-sessions">', unsafe_allow_html=True)
+        for group_name, sessions in groups.items():
+            st.markdown(
+                f'<div class="session-group-label">{group_name}</div>',
+                unsafe_allow_html=True
+            )
+            for sid, s in reversed(sessions):
+                is_active = st.session_state.active == sid
+                active_class = "active" if is_active else ""
+                display = session_display_name(s["name"])
+                st.markdown(
+                    f'<div class="session-item {active_class}">'
+                    f'<span class="session-icon">📄</span>'
+                    f'<span class="session-name">{display}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                if st.button(display, key=f"sess_{sid}"):
+                    st.session_state.active = sid
+                    st.session_state.uploading = False
+                    st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="padding:20px 16px;font-size:12px;'
+            'color:rgba(255,255,255,0.2)">No chats yet.</div>',
+            unsafe_allow_html=True
+        )
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ── LANDING ────────────────────────────────────────────────────────────────
+def render_landing():
+    st.markdown("""
+<div style="display:flex;flex-direction:column;align-items:center;
+            justify-content:center;height:calc(100vh - 52px);
+            text-align:center;padding:0 2rem">
+    <div style="font-size:3rem;margin-bottom:1.2rem;opacity:0.15">⬡</div>
+    <h1 style="font-size:2.2rem;font-weight:700;letter-spacing:-0.05em;
+               color:#e8e8e8;margin-bottom:0.6rem;line-height:1.1">
+        What do you want<br>to know?
+    </h1>
+    <p style="font-size:0.95rem;color:rgba(255,255,255,0.3);
+              max-width:360px;line-height:1.6;margin-bottom:2.5rem">
+        Upload a financial or legal document and ask anything.
+        Four AI agents extract, analyse, validate, and report.
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 0.6, 1])
+    with col2:
+        if st.button("Start a new chat", type="primary",
+                     key="landing_new"):
+            st.session_state.uploading = True
+            st.rerun()
+
+
+# ── UPLOAD SCREEN ──────────────────────────────────────────────────────────
+def render_upload_screen():
+    st.markdown("""
+<div style="display:flex;flex-direction:column;align-items:center;
+            padding:4rem 2rem 2rem;text-align:center">
+    <p style="font-size:11px;font-weight:600;letter-spacing:0.1em;
+              text-transform:uppercase;color:rgba(255,255,255,0.2);
+              margin-bottom:0.8rem">New Chat</p>
+    <h2 style="font-size:1.7rem;font-weight:600;letter-spacing:-0.04em;
+               color:#e8e8e8;margin-bottom:0.5rem">Drop your document</h2>
+    <p style="font-size:0.88rem;color:rgba(255,255,255,0.3);
+              margin-bottom:2.5rem;max-width:320px">
+        PDF, DOCX, TXT, or MD · up to 50 MB
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        f = st.file_uploader(
+            " ",
+            type=["pdf", "docx", "txt", "md"],
+            key="upload_input",
             label_visibility="collapsed"
         )
 
-        st.divider()
-        st.markdown("**Stored Documents**")
-
-        doc_data = api_get("/documents/list")
-        if doc_data and doc_data["total_documents"] > 0:
-            for doc in doc_data["documents"]:
-                st.markdown(f"📄 `{doc}`")
-            st.caption(
-                f"{doc_data['total_documents']} documents · "
-                f"{doc_data['total_chunks']} chunks"
-            )
-        else:
-            st.caption("No documents uploaded yet.")
-
-        st.divider()
-        stats = api_get("/analysis/stats")
-        if stats:
-            col1, col2 = st.columns(2)
-            col1.metric("Questions", stats["total_questions"])
-            col2.metric("Analyses", stats["total_analyses"])
-
-    return page.split(" ", 1)[1]
-
-def render_upload_page():
-    """Page 1: Upload documents and ingest them."""
-    st.markdown(
-        '<div class="main-header">📤 Upload Document</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        '<div class="sub-header">Upload PDF, DOCX, or TXT files '
-        'to add them to the NexusIQ knowledge base.</div>',
-        unsafe_allow_html=True
-    )
-
-    uploaded_file = st.file_uploader(
-        "Drop a document here",
-        type=["pdf", "docx", "txt", "md"],
-        help="Maximum file size: 50MB"
-    )
-
-    if uploaded_file is not None:
-        col1, col2, col3 = st.columns([2, 1, 1])
-        col1.info(f"**{uploaded_file.name}** "
-                  f"({uploaded_file.size / 1024:.1f} KB)")
-
-        if col2.button("⚡ Ingest Document", type="primary"):
-            with st.spinner("Parsing, chunking, and embedding..."):
-                files = {"file": (
-                    uploaded_file.name,
-                    uploaded_file.getvalue(),
-                    uploaded_file.type
-                )}
-                result = api_post("/documents/upload", files=files)
-
+        if f:
+            with st.spinner("Parsing · Chunking · Embedding…"):
+                result = api_post("/documents/upload", files={
+                    "file": (
+                        f.name, f.getvalue(),
+                        f.type or "application/octet-stream"
+                    )
+                })
             if result:
-                st.success(f"✅ {result['message']}")
-                col_a, col_b, col_c, col_d = st.columns(4)
-                col_a.metric(
-                    "Category", result["document_category"]
-                )
-                col_b.metric(
-                    "Chunks created", result["chunks_created"]
-                )
-                col_c.metric(
-                    "Detected title",
-                    result.get("detected_title", "N/A")[:20]
-                    if result.get("detected_title") else "N/A"
-                )
-                col_d.metric(
-                    "Detected date",
-                    result.get("detected_date", "N/A")
-                )
+                sid = new_session(f.name, result)
+                st.session_state.active = sid
+                st.session_state.uploading = False
                 st.rerun()
 
+    st.markdown("""
+<div style="text-align:center;margin-top:1.5rem">
+    <p style="font-size:12px;color:rgba(255,255,255,0.15)">
+        Or pick a document already in your knowledge base
+    </p>
+</div>
+""", unsafe_allow_html=True)
 
-def render_ask_page():
-    """Page 2: Ask questions via RAG."""
-    st.markdown(
-        '<div class="main-header">💬 Ask Questions</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        '<div class="sub-header">Ask anything about your uploaded '
-        'documents. Answers are grounded in source text with '
-        'citations.</div>',
-        unsafe_allow_html=True
-    )
+    docs = api_get("/documents/list")
+    if docs and docs["total_documents"] > 0:
+        col_a, col_b, col_c = st.columns([1, 2, 1])
+        with col_b:
+            for doc in docs["documents"]:
+                display = session_display_name(doc)
+                if st.button(f"📄  {display}", key=f"pick_{doc}"):
+                    meta = {
+                        "document_name": doc,
+                        "document_category": "",
+                        "chunks_created": 0,
+                        "detected_title": doc,
+                        "detected_date": ""
+                    }
+                    sid = new_session(doc, meta)
+                    st.session_state.active = sid
+                    st.session_state.uploading = False
+                    st.rerun()
 
-    doc_data = api_get("/documents/list")
-    doc_filter = None
 
-    if doc_data and doc_data["total_documents"] > 0:
-        filter_options = ["All documents"] + doc_data["documents"]
-        selected = st.selectbox(
-            "Search within", filter_options
-        )
-        if selected != "All documents":
-            doc_filter = selected
-    else:
-        st.warning("No documents uploaded yet. "
-                   "Go to Upload & Ingest first.")
+# ── CHAT VIEW ──────────────────────────────────────────────────────────────
+def render_chat():
+    sess = get_session()
+    if not sess:
+        render_landing()
         return
 
-    question = st.text_input(
-        "Your question",
-        placeholder="What was the total revenue in fiscal 2023?",
-        key="question_input"
-    )
+    doc_name = sess["name"]
+    meta = sess["meta"]
+    history = sess["history"]
 
-    if st.button("🔍 Ask", type="primary") and question:
-        with st.spinner("Searching and generating answer..."):
-            result = api_post("/analysis/ask", {
-                "question": question,
-                "document_filter": doc_filter,
-                "n_results": 5
-            })
+    # ── Top bar ──────────────────────────────────────────────────────────
+    cat = meta.get("document_category", "")
+    st.markdown(f"""
+<div class="top-bar">
+    <span class="top-bar-doc">{session_display_name(doc_name)}</span>
+    {'<span class="top-bar-badge">' + cat + '</span>' if cat else ''}
+</div>
+""", unsafe_allow_html=True)
 
-        if result:
-            if result.get("had_sufficient_context"):
-                st.success("**Answer**")
-                st.write(result["answer"])
+    # ── Messages ─────────────────────────────────────────────────────────
+    msg_container = st.container()
+
+    with msg_container:
+        if not history:
+            detected_title = meta.get("detected_title") or doc_name
+            chunks = meta.get("chunks_created", 0)
+            st.markdown(f"""
+<div style="text-align:center;padding:3rem 2rem 1.5rem">
+    <div style="font-size:2rem;margin-bottom:1rem;opacity:0.12">⬡</div>
+    <p style="font-size:0.88rem;color:rgba(255,255,255,0.35);
+              max-width:400px;margin:0 auto;line-height:1.6">
+        <strong style="color:rgba(255,255,255,0.6)">
+            {detected_title[:50]}
+        </strong><br>
+        {chunks} chunks indexed · Ask me anything about this document.
+    </p>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;
+            gap:8px;padding:0 4rem 2rem;max-width:700px;margin:0 auto">
+    <div style="background:rgba(255,255,255,0.03);border:0.5px solid
+                rgba(255,255,255,0.08);border-radius:12px;padding:14px 16px;
+                cursor:pointer;font-size:13px;color:rgba(255,255,255,0.5);
+                line-height:1.4">
+        📊 What are the key financial highlights?
+    </div>
+    <div style="background:rgba(255,255,255,0.03);border:0.5px solid
+                rgba(255,255,255,0.08);border-radius:12px;padding:14px 16px;
+                cursor:pointer;font-size:13px;color:rgba(255,255,255,0.5);
+                line-height:1.4">
+        ⚠️ What are the main risk factors?
+    </div>
+    <div style="background:rgba(255,255,255,0.03);border:0.5px solid
+                rgba(255,255,255,0.08);border-radius:12px;padding:14px 16px;
+                cursor:pointer;font-size:13px;color:rgba(255,255,255,0.5);
+                line-height:1.4">
+        📋 Summarise the executive overview
+    </div>
+    <div style="background:rgba(255,255,255,0.03);border:0.5px solid
+                rgba(255,255,255,0.08);border-radius:12px;padding:14px 16px;
+                cursor:pointer;font-size:13px;color:rgba(255,255,255,0.5);
+                line-height:1.4">
+        🔭 What is the company's outlook?
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # Render existing messages
+        for msg in history:
+            if msg["role"] == "user":
+                with st.chat_message("user", avatar="🧑"):
+                    st.markdown(msg["content"])
             else:
-                st.warning("⚠️ Insufficient context")
-                st.write(result["answer"])
+                with st.chat_message("assistant", avatar="✦"):
+                    st.markdown(msg["content"])
+                    if msg.get("sources"):
+                        with st.expander(
+                            f"  {len(msg['sources'])} sources",
+                            expanded=False
+                        ):
+                            for i, src in enumerate(msg["sources"], 1):
+                                score = src.get("relevance_score", 0)
+                                color = (
+                                    "#4ade80" if score > 0.6 else
+                                    "#fbbf24" if score > 0.35 else
+                                    "#888"
+                                )
+                                st.markdown(
+                                    f"**[{i}]** `{src['document']}` "
+                                    f"· Page {src.get('page','N/A')} · "
+                                    f"<span style='color:{color}'>"
+                                    f"{score:.3f}</span>",
+                                    unsafe_allow_html=True
+                                )
+                                if src.get("preview"):
+                                    st.caption(src["preview"][:160])
 
-            with st.expander("📚 Sources used"):
-                for i, source in enumerate(
-                    result.get("sources", []), 1
-                ):
-                    st.markdown(
-                        f"**[Source {i}]** {source['document']} "
-                        f"· Page {source['page']} "
-                        f"· Relevance: {source['relevance_score']}"
-                    )
-                    st.caption(source.get("preview", "")[:200])
-                    st.divider()
+    # ── Input + streaming ────────────────────────────────────────────────
+    question = st.chat_input(
+        "Ask anything about this document…",
+        key=f"chat_{st.session_state.active}"
+    )
 
-    st.divider()
-    st.markdown("**Recent Questions**")
-    history = api_get("/analysis/questions")
-    if history and history["questions"]:
-        for q in history["questions"][:5]:
-            with st.expander(f"🕐 {q['question'][:80]}"):
-                st.write(q["answer"])
-                st.caption(
-                    f"Asked: {q['created_at'][:19].replace('T', ' ')}"
+    if question:
+        # Append user message
+        sess["history"].append({"role": "user", "content": question})
+
+        with msg_container:
+            with st.chat_message("user", avatar="○"):
+                st.markdown(question)
+
+            with st.chat_message("assistant", avatar="✦"):
+                # Stream the response token by token
+                answer = st.write_stream(
+                    stream_question(question, doc_name)
                 )
 
+        # Fetch sources (non-blocking, separate call)
+        sources = get_sources(question, doc_name)
 
-def render_analysis_page():
-    """Page 3: Full four-agent deep analysis."""
-    st.markdown(
-        '<div class="main-header">🔬 Deep Analysis</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        '<div class="sub-header">Run the full four-agent pipeline: '
-        'Extractor → Analyst → Validator → Synthesizer. '
-        'Takes 60-90 seconds.</div>',
-        unsafe_allow_html=True
-    )
-
-    doc_data = api_get("/documents/list")
-    if not doc_data or doc_data["total_documents"] == 0:
-        st.warning("No documents uploaded yet.")
-        return
-
-    selected_doc = st.selectbox(
-        "Select document to analyze",
-        doc_data["documents"]
-    )
-
-    col1, col2 = st.columns([1, 3])
-    run_button = col1.button(
-        "🚀 Run Analysis", type="primary"
-    )
-    col2.caption(
-        "This triggers 4 AI agents making 12-16 tool calls. "
-        "Watch the terminal for live progress."
-    )
-
-    if run_button:
-        progress_placeholder = st.empty()
-        status_placeholder = st.empty()
-
-        agents = [
-            ("🔍", "Extractor", "Pulling structured facts..."),
-            ("📊", "Analyst", "Interpreting the data..."),
-            ("✅", "Validator", "Cross-checking claims..."),
-            ("📝", "Synthesizer", "Writing final report...")
-        ]
-
-        with progress_placeholder.container():
-            st.markdown("**Agent pipeline running...**")
-            for emoji, name, desc in agents:
-                st.markdown(
-                    f'<div class="agent-step">'
-                    f'{emoji} <strong>{name}</strong> — {desc}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-        with st.spinner(
-            "Running 4 agents... check terminal for live logs"
-        ):
-            result = api_post("/analysis/analyze", {
-                "document_name": selected_doc
-            })
-
-        progress_placeholder.empty()
-
-        if result:
-            st.session_state["last_report"] = result
-            st.session_state["last_doc"] = selected_doc
-            st.rerun()
-
-    if "last_report" in st.session_state:
-        render_report(
-            st.session_state["last_report"],
-            st.session_state.get("last_doc", "")
-        )
+        sess["history"].append({
+            "role": "assistant",
+            "content": answer,
+            "sources": sources
+        })
+        st.rerun()
 
 
-def render_report(report: dict, doc_name: str):
-    """Render a complete analysis report."""
-    st.divider()
-    st.markdown(f"### Intelligence Report — `{doc_name}`")
-
-    assessment = report.get("overall_assessment", "N/A")
-    confidence = report.get("report_confidence", "N/A")
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Overall Assessment", assessment)
-    col2.metric("Report Confidence", confidence)
-    stats = report.get("pipeline_stats", {})
-    col3.metric("Agents Run", stats.get("agents_run", 4))
-    col4.metric(
-        "Tool Calls", stats.get("total_tool_calls", 0)
-    )
-
-    st.markdown("#### Executive Summary")
-    summary = report.get("executive_summary", "")
-    if summary:
-        st.info(summary)
-
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        st.markdown("#### Financial Snapshot")
-        snapshot = report.get("financial_snapshot", {})
-        if snapshot:
-            metrics = snapshot.get("key_metrics", [])
-            for m in metrics:
-                verified = m.get("verified", True)
-                icon = "✓" if verified else "?"
-                color = "verified" if verified else "unverified"
-                st.markdown(
-                    f'<span class="{color}">{icon}</span> '
-                    f'**{m.get("metric", "")}**: '
-                    f'{m.get("value", "")}',
-                    unsafe_allow_html=True
-                )
-
-    with col_right:
-        st.markdown("#### Risk Landscape")
-        risks = report.get("risk_landscape", [])
-        if risks:
-            for risk in risks[:5]:
-                likelihood = risk.get("likelihood", "MEDIUM")
-                severity = risk.get("severity", "MEDIUM")
-                risk_class = f"risk-{severity.lower()}"
-                st.markdown(
-                    f'<div class="metric-card {risk_class}">'
-                    f'<strong>{risk.get("risk", "")[:60]}</strong>'
-                    f'<br><small>Likelihood: {likelihood} · '
-                    f'Severity: {severity}</small>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-    st.markdown("#### Business Analysis")
-    analysis = report.get("business_analysis", "")
-    if analysis:
-        st.write(analysis)
-
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.markdown("#### Validation Notes")
-        notes = report.get("validation_notes", "")
-        if notes:
-            verified_count = stats.get("verified_claims", 0)
-            st.success(
-                f"✅ {verified_count} claims verified"
-            )
-            st.write(notes)
-
-    with col_b:
-        st.markdown("#### Outlook")
-        outlook = report.get("outlook", "")
-        if outlook:
-            st.write(outlook)
-
-    if st.button("💾 Export Report as JSON"):
-        st.download_button(
-            label="⬇️ Download JSON",
-            data=json.dumps(report, indent=2),
-            file_name=f"nexusiq_report_{doc_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
-
-
-def render_dashboard_page():
-    """Page 4: Usage statistics and history."""
-    st.markdown(
-        '<div class="main-header">📊 Dashboard</div>',
-        unsafe_allow_html=True
-    )
-
-    stats = api_get("/analysis/stats")
-    if not stats:
-        st.error("Could not load stats.")
-        return
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Questions", stats["total_questions"])
-    col2.metric("Total Analyses", stats["total_analyses"])
-    col3.metric("Documents Stored", stats["total_documents"])
-    col4.metric(
-        "Context Success Rate",
-        f"{stats['context_success_rate']}%"
-    )
-
-    st.divider()
-
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        st.markdown("**Recent Analysis Runs**")
-        recent = stats.get("recent_analyses", [])
-        if recent:
-            for run in recent:
-                with st.expander(
-                    f"📄 {run['document']} — {run['assessment']}"
-                ):
-                    st.markdown(
-                        f"Confidence: **{run['confidence']}**"
-                    )
-                    st.caption(
-                        run['timestamp'][:19].replace('T', ' ')
-                    )
-        else:
-            st.caption(
-                "No analyses run yet. "
-                "Go to Deep Analysis to run one."
-            )
-
-    with col_right:
-        st.markdown("**Question History**")
-        history = api_get("/analysis/questions")
-        if history and history["questions"]:
-            for q in history["questions"][:8]:
-                context_icon = (
-                    "✅" if q["had_sufficient_context"] else "⚠️"
-                )
-                st.markdown(
-                    f"{context_icon} {q['question'][:70]}"
-                )
-                st.caption(
-                    q['created_at'][:19].replace('T', ' ')
-                )
-        else:
-            st.caption("No questions asked yet.")
-
-
+# ── MAIN ───────────────────────────────────────────────────────────────────
 def main():
-    """Main app entry point."""
-    page = render_sidebar()
+    # ── Hamburger (collapsed state, no sidebar column) ──
+    if not st.session_state.sidebar_open:
+        col_ham, col_spacer = st.columns([0.04, 0.96])
+        with col_ham:
+            if st.button("☰", key="open_sidebar"):
+                st.session_state.sidebar_open = True
+                st.rerun()
 
-    if page == "Upload & Ingest":
-        render_upload_page()
-    elif page == "Ask Questions":
-        render_ask_page()
-    elif page == "Deep Analysis":
-        render_analysis_page()
-    elif page == "Dashboard":
-        render_dashboard_page()
+    # ── Layout ──────────────────────────────────────────────────────────
+    if st.session_state.sidebar_open:
+        col_sb, col_main = st.columns([0.22, 0.78])
+        with col_sb:
+            render_sidebar_content()
+        with col_main:
+            _render_main_area()
+    else:
+        _render_main_area()
+
+
+def _render_main_area():
+    if st.session_state.uploading:
+        render_upload_screen()
+    elif st.session_state.active:
+        render_chat()
+    else:
+        render_landing()
 
 
 if __name__ == "__main__":

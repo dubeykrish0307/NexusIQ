@@ -1,12 +1,10 @@
-from pydantic import BaseModel, Field
 from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class QuestionRequest(BaseModel):
-    """
-    Request body for the /ask endpoint.
-    Field(...) means required. The constraints are validated automatically.
-    """
+    """Request body for /analysis/ask."""
     question: str = Field(
         ...,
         min_length=3,

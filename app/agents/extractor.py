@@ -58,25 +58,15 @@ JSON STRUCTURE:
 
 
 class ExtractorAgent(BaseAgent):
-    """
-    Specialized agent for structured data extraction from financial documents.
-    Uses the vector store search tool to find relevant sections before extracting.
-    """
-
     def __init__(self):
         super().__init__(
             name="Extractor",
             system_prompt=EXTRACTOR_SYSTEM_PROMPT,
             tools=[SEARCH_TOOL_SCHEMA],
-            tool_functions={"search_documents": search_document_tool}
+            tool_functions={"search_documents": search_document_tool},
         )
 
     def extract(self, document_name: str = None) -> AgentResponse:
-        """
-        Run the full extraction pipeline on the available documents.
-        The agent will search for different data types across multiple
-        tool calls before assembling the final JSON output.
-        """
         if document_name:
             task = f"""Extract all structured information from the document 
 '{document_name}'. 

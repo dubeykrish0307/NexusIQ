@@ -1,16 +1,11 @@
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 class Settings:
-    """
-    Central configuration for the entire application.
-    Every module reads settings from here instead of calling
-    os.getenv() scattered throughout the codebase.
-    """
-
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     APP_NAME: str = os.getenv("APP_NAME", "NexusIQ")
     DEBUG: bool = os.getenv("DEBUG", "True").lower() == "true"
@@ -23,9 +18,7 @@ class Settings:
     DEFAULT_MAX_TOKENS: int = 1500
     DEFAULT_RETRIEVAL_COUNT: int = 5
 
-    CHROMA_PERSIST_DIRECTORY: str = os.getenv(
-        "CHROMA_PERSIST_DIRECTORY", "./data/chroma"
-    )
+    CHROMA_PERSIST_DIRECTORY: str = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/chroma")
 
 
 settings = Settings()
